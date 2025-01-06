@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <iostream>
 #include <fstream>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <map>
@@ -23,20 +24,16 @@ using namespace std;
 #define UPLOAD 2
 #define COUNT 3
 #define CONNECT 4
+#define TRACKER_STATUS 10
+#define TRACKER_STATUS_DOWN 11
+#define MAX_CLIENTS 50000
 
 // Client
 char filesWanted[MAX_FILES][MAX_FILENAME];
 int numberOfFilesWanted = 0;
 map<string, vector<string>> filesOwned;
-void displayMap(const map<string, vector<string>>& hashes) {
-    for (const auto& [key, value] : hashes) {
-        cout << "Key: " << key << "\nValues: ";
-        for (const auto& v : value) {
-            cout << v << " ";
-        }
-        cout << "\n";
-    }
-}
+std::mutex filesOwnedMutex;
+
 void *download_thread_func(void *arg)
 {
     int rank = *(int*) arg;
@@ -49,7 +46,7 @@ void *download_thread_func(void *arg)
         MPI_Send(&filesWanted[i], MAX_FILENAME, MPI_CHAR, TRACKER_RANK, DOWNLOAD, MPI_COMM_WORLD);
         int numberOfSeeds;
         MPI_Recv(&numberOfSeeds, 1, MPI_INT, TRACKER_RANK, DOWNLOAD, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        for (std::size_t i = 0; i < numberOfSeeds; i++) {
+        for (std::size_t k = 0; k < numberOfSeeds; k++) {
             int seeder;
             MPI_Recv(&seeder, 1, MPI_INT, TRACKER_RANK, DOWNLOAD, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             swarms[filesWanted[i]].push_back(seeder);
@@ -68,57 +65,59 @@ void *download_thread_func(void *arg)
 
     // Connecting to seeds/peers
     for (size_t i = 0; i < numberOfFilesWanted; ++i) {
+        ofstream out("client" + to_string(rank) + "_" + filesWanted[i]);
+
         string fileWanted = filesWanted[i];
         vector<int> seeds = swarms[fileWanted];
         vector<string> it  = hashes[fileWanted];
-        
-        for (int seed : seeds) {
-            MPI_Send(&filesWanted[i], MAX_FILENAME, MPI_CHAR, seed, COUNT, MPI_COMM_WORLD);
-            int ack = 0;
-            MPI_Recv(&ack, 1, MPI_INT, seed, COUNT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (ack == ACK) {
-                for (string hash: it) {
-                    int bestSeed = 0;
-                    int minClients = 20;
-                    char msg[HASH_SIZE];
-                    strncpy(msg, hash.c_str(), HASH_SIZE);
-                        
-                    // Daca are fisierul verificam daca are segment-ul si cati sunt conectati
-                    MPI_Send(&msg, HASH_SIZE, MPI_CHAR, seed, COUNT, MPI_COMM_WORLD);
-                    int connected = 0;
-                    MPI_Recv(&connected, 1, MPI_INT, seed, COUNT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    if (connected >= 0 && connected < minClients) { // Are hash-ul
-                        minClients = connected;
-                        bestSeed = seed;
-                    }
+        for (string hash : it) {
+            int stop = 0;
+            // MPI_Send(&stop, 1, MPI_INT, TRACKER_RANK, TRACKER_STATUS_DOWN, MPI_COMM_WORLD);
+
+            int bestSeed = seeds[0];
+            int minClients = MAX_CLIENTS;
+            char msg[HASH_SIZE];
+            strncpy(msg, hash.c_str(), HASH_SIZE);
+            for (int seed : seeds) {
+                MPI_Send(&filesWanted[i], MAX_FILENAME, MPI_CHAR, seed, 7, MPI_COMM_WORLD);
+                // Daca are fisierul verificam daca are segment-ul si cati sunt conectati
+                MPI_Send(&msg, HASH_SIZE, MPI_CHAR, seed, COUNT, MPI_COMM_WORLD);
+                int connected = 0;
+                MPI_Recv(&connected, 1, MPI_INT, seed, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                if (connected >= 0 && connected < minClients) { // Are hash-ul
+                    minClients = connected;
+                    bestSeed = seed;
                 }
-                        // cout << connected << endl;
-                    // }
-                    // cout << rank << " " << bestSeed << endl;
-                    // Proceeding download
-                    // for (int seed : seeds) {
-                    //     if (seed == bestSeed) {
-                    //         char startDownload = 1;
-                    //         MPI_Send(&startDownload, 1, MPI_BYTE, bestSeed, COUNT, MPI_COMM_WORLD);
-                    //     } else {
-                    //         char startDownload = 0;
-                    //         MPI_Send(&startDownload, 1, MPI_BYTE, bestSeed, COUNT, MPI_COMM_WORLD);
-                    //     }
-                    // }
-                    // PRIMIM hash-ul DE LA SEED-ul ales
-                    // int ack = 0;
-                    // MPI_Recv(&ack, 1, MPI_INT, bestSeed, COUNT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    
-                    // ofstream out("client" + to_string(rank) + "_" + filesWanted[i]);
-                    // if (ack != ACK) {
-                    //     cout << "CEVA NU A MERS" << endl;
-                    // }
-                    // filesOwned[filesWanted[i]].push_back(hash);
-                    // out << hash << endl;
-                // }
+            }
+                // Proceeding download
+            for (int seed : seeds) {
+                if (seed == bestSeed) {
+                    char startDownload = 1;
+                    MPI_Send(&startDownload, 1, MPI_CHAR, bestSeed, 5, MPI_COMM_WORLD);
+                } else {
+                    char startDownload = 0;
+                    MPI_Send(&startDownload, 1, MPI_CHAR, seed, 5, MPI_COMM_WORLD);
+                }
+            }
+                // PRIMIM hash-ul DE LA SEED-ul ales
+            int ack = 0;
+            MPI_Recv(&ack, 1, MPI_INT, bestSeed, 6, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            cout << rank << "from :" << bestSeed  << " fisier:" << filesWanted[i] << endl;
+            
+            if (ack != ACK) {
+                cout << "CEVA NU A MERS" << endl;
+            }
+
+            std::lock_guard<std::mutex> lock(filesOwnedMutex);
+            filesOwned[filesWanted[i]].push_back(hash);
+            out << hash << endl;
         }
     }
-    
+
+    // Telling tracker all files have been downloaded
+    int stop = 1;
+    // MPI_Send(&stop, 1, MPI_INT, TRACKER_RANK, TRACKER_STATUS_DOWN, MPI_COMM_WORLD);
+
     return NULL;
 }
 
@@ -128,36 +127,40 @@ void *upload_thread_func(void *arg)
 
     int connected = 0;
     while (1) {
+        // int tracker_status_check = 0;
+        // MPI_Send(&tracker_status_check, 1, MPI_INT, TRACKER_RANK, TRACKER_STATUS, MPI_COMM_WORLD);
+        // int tracker_status = 0;
+        // MPI_Recv(&tracker_status, 1, MPI_INT, TRACKER_RANK, TRACKER_STATUS, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        // if (tracker_status == 1) {
+        //     return NULL;
+        // }
+
         MPI_Status status;
         char fileName[MAX_FILENAME];
 
-        MPI_Recv(&fileName, MAX_FILENAME, MPI_CHAR, MPI_ANY_SOURCE, COUNT, MPI_COMM_WORLD, &status);
+        MPI_Recv(&fileName, MAX_FILENAME, MPI_CHAR, MPI_ANY_SOURCE, 7, MPI_COMM_WORLD, &status);
         int tag = status.MPI_TAG;
         int source = status.MPI_SOURCE;
-        cout << fileName << " "<<  source << endl;
-        if (!filesOwned[fileName].empty()) {
-            int ack = ACK;
-            MPI_Send(&ack, 1, MPI_INT, source, COUNT, MPI_COMM_WORLD);
-        //     char msg[HASH_SIZE];
-        //     // MPI_Recv(&msg, HASH_SIZE, MPI_CHAR, source, COUNT, MPI_COMM_WORLD, &status);
-            
-        //     // // Sending number of connected clients
-        //     // MPI_Send(&connected, 1, MPI_INT, source, COUNT, MPI_COMM_WORLD);
-        //     // // cout << "sursa:" << source << " rank:" << rank << endl;
-
-        //     // char downloadingStatus = 0;
-        //     // MPI_Recv(&downloadingStatus, 1, MPI_BYTE, source, COUNT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        //     // if (downloadingStatus == 1) { // Daca suntem seed-ul ales sa uploadam fisierul, il uploadam
-        //     //     connected++;
-        //     //     int ack = ACK;
-        //     //     MPI_Send(&ack, 1, MPI_INT, source, COUNT, MPI_COMM_WORLD);
-            // }
+        char msg[HASH_SIZE];
+        MPI_Recv(&msg, HASH_SIZE, MPI_CHAR, source, COUNT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // Sending number of connected clients
+        std::lock_guard<std::mutex> lock(filesOwnedMutex);
+        if (std::find(filesOwned[fileName].begin(), filesOwned[fileName].end(), msg) != filesOwned[fileName].end()) {
+            MPI_Send(&connected, 1, MPI_INT, source, 0, MPI_COMM_WORLD);
         } else {
-            int ack = 0;
-            MPI_Send(&ack, 1, MPI_INT, source, COUNT, MPI_COMM_WORLD);
+            int doesntHaveHash = -1;
+            MPI_Send(&doesntHaveHash, 1, MPI_INT, source, 0, MPI_COMM_WORLD);
+        }
+
+        char downloadingStatus = 0;
+        MPI_Recv(&downloadingStatus, 1, MPI_CHAR, source, 5, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (downloadingStatus == 1) { // Daca suntem seed-ul ales sa uploadam fisierul, il uploadam
+            connected++;
+            int ack = ACK;
+            MPI_Send(&ack, 1, MPI_INT, source, 6, MPI_COMM_WORLD);
         }
         
-        // break;
     }
 
     return NULL;
@@ -165,7 +168,6 @@ void *upload_thread_func(void *arg)
 
 void tracker(int numtasks, int rank) {
     map<string,  vector<string>> hashes;
-    
     map<string, vector<int>>  swarms;
     for (size_t peer = 1; peer < numtasks; ++peer) {
         int nr = 0;
@@ -176,7 +178,7 @@ void tracker(int numtasks, int rank) {
             bool alreadyGotten = false;
             if (!swarms[fileName].empty()) {
                 alreadyGotten = true;
-            }
+            } 
             swarms[fileName].push_back(peer);
 
             int nOfSegments;
@@ -217,9 +219,32 @@ void tracker(int numtasks, int rank) {
                 strncpy(segment, hash.c_str(), HASH_SIZE);
                 MPI_Send(&segment, HASH_SIZE, MPI_CHAR, peer, DOWNLOAD, MPI_COMM_WORLD);
             }
-
         }
     }
+
+    int clientsDone = 0;
+        // cati au terminat de downloadat
+    // while (1) {
+    //     int peer_status = 0;
+    //     MPI_Recv(&peer_status, 1, MPI_INT, MPI_ANY_SOURCE, TRACKER_STATUS_DOWN, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    //     if (peer_status == 1) {
+    //         clientsDone++;
+    //     }
+    //     cout << clientsDone << endl;
+    //     for (std::size_t peer = 1; peer < numtasks; peer++) {
+    //         MPI_Recv(&peer_status, 1, MPI_INT, peer, TRACKER_STATUS, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    //         if (clientsDone == numtasks - 1) {
+    //             int stop = 1;
+    //             MPI_Send(&stop, 1, MPI_INT, peer, TRACKER_STATUS, MPI_COMM_WORLD);
+    //         } else {
+    //             int keepGoing = 0;
+    //             MPI_Send(&keepGoing, 1, MPI_INT, peer, TRACKER_STATUS, MPI_COMM_WORLD);
+    //         }
+    //     }
+    //     if (clientsDone == numtasks - 1) {
+    //         return;
+    //     }
+    // }
 }
 
 void peer(int numtasks, int rank) {
