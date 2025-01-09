@@ -1,0 +1,32 @@
+Implementarea Protocolului BitTorrent folosind MPI
+
+Acest proiect implementeaza o versiune simplificata a protocolului BitTorrent folosind MPI. Programul simuleaza un mediu de partajare P2P (peer-to-peer),
+in care clientii descarca si incarca fisiere pe segmente, coordonat de un tracker.
+
+Am decis ca in rezolvare sa NU fac distinctie intre seeders si peers, astfel orice referire la seed sau peer este echivalenta. 
+
+Cum Functioneaza:
+
+    Tracker:
+    -inregistreaza fisierele si hash-urile oferite de seeders.
+
+    -raspunde cererilor de descarcare oferind lista de seeders si hash-urile segmentelor.
+
+    Peers:
+    -fiecare peer citeste fisierele proprii dintr-un fisier de intrare si le transmite tracker-ului.
+
+    -cere fisiere de la tracker si le descarca pe hash-uri de la cei mai putin solicitati seeders (cei care uploadeaza cel mai putin in acel moment).
+
+    -Imparte segmentele detinute cu alti peers la cerere.
+
+    Threads:
+    -thread Descarcare: Gestioneaza comunicarea cu trackerul si alti peers pentru descarcarea fisierelor cerute.
+
+    -thread Incarcare: Raspunde cererilor de descarcare ale altor peers.
+
+Eficienta:
+    Eficienta este asigurata de faptul ca fiecare client descarca segmentul de la cel mai putin solicitat seeder. Astfel, clientul face o cerere catre toti seed-erii acelui segment, iar acesta primeste ca raspuns
+un numar intreg care reprezinta numarul de upload-uri ale acelui seed la momentul respectiv, sau -1 daca seed-ul nu are segmentul respectiv. Astfel, clientul va alege seed-ul cu numarul cel mai mic de upload-uri.
+
+    In final, cand un client a terminat de downloadat toate fisierele dorite, va transmite un mesaj tracker-ului pentru a anunta ca a terminat. Cand tracker-ul primeste acest mesaj de la toti clientii, acesta le va 
+trimite un mesaj de incheiere, iar clientii isi vor inchide thread-ul de upload.

@@ -3,7 +3,7 @@ build:
 
 run:
 	mpic++ -o tema2 tema2.cpp -pthread -Wall
-	mpirun -np 4 ./tema2
+	mpirun -np 6 ./tema2
 
 clean:
-	rm -rf tema3
+	rm client*
